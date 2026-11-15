@@ -6,8 +6,8 @@
   <meta name="theme-color" content="#f7f8f3">
   <meta name="description" content="종이컵과 플라스틱컵을 카메라로 구분하는 CODEMATE AI 체험 웹사이트">
   <title>컵체크. | 종이컵 · 플라스틱컵 구분</title>
-  <link rel="stylesheet" href="./style.css?v=2">
-  <script defer src="./app.js?v=3"></script>
+  <link rel="stylesheet" href="./style.css?v=4">
+  <script defer src="./app.js?v=4"></script>
 </head>
 <body>
   <div class="page-shell">
@@ -59,13 +59,13 @@
         </div>
       </section>
 
-      <section class="screen screen-scan" id="scan" hidden aria-label="카메라 재질 분석">
+      <section class="screen screen-scan" id="scan" hidden aria-label="사진으로 재질 분석">
         <div class="scan-heading">
           <button class="text-back" type="button" id="backBtn">
             <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="m15 5-7 7 7 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
             <span>처음으로</span>
           </button>
-          <span class="scan-heading-title">컵체크<span>.</span> <span class="scan-heading-muted">/ 실시간 분류</span></span>
+          <span class="scan-heading-title">컵체크<span>.</span> <span class="scan-heading-muted">/ 사진 분석</span></span>
           <div class="scan-actions">
             <button class="icon-button" type="button" id="flipBtn" title="전·후면 카메라 전환" aria-label="전·후면 카메라 전환">
               <svg aria-hidden="true" width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M20 7v5h-5M4 17v-5h5M5.7 9a7 7 0 0 1 12.6-2L20 12M4 12l1.8 5A7 7 0 0 0 18.4 15" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -80,6 +80,7 @@
         <div class="scan-grid">
           <div class="camera-panel" id="cameraPanel">
             <video id="camera" muted autoplay playsinline></video>
+            <canvas id="frozenCanvas" hidden aria-label="촬영한 사진"></canvas>
             <canvas id="sampleCanvas" width="224" height="224" hidden></canvas>
             <div class="camera-shade"></div>
             <div class="camera-topline">
@@ -87,7 +88,8 @@
               <span class="camera-side" id="cameraSide">후면 카메라</span>
             </div>
             <div class="viewfinder"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i></div>
-            <div class="camera-hint">컵 하나를 사각형 안에 보여주세요</div>
+            <div class="camera-hint" id="cameraHint">컵 하나를 사각형 안에 보여주세요</div>
+            <div class="capture-control"><button class="capture-button" id="captureBtn" type="button" disabled><span class="capture-dot" aria-hidden="true"></span><span id="captureLabel">사진 찍기</span></button></div>
 
             <div class="camera-overlay" id="cameraOverlay">
               <div class="overlay-loading" id="overlayLoading">
@@ -109,14 +111,14 @@
           </div>
 
           <aside class="result-panel" aria-label="재질 분석 결과" aria-live="polite">
-            <div class="result-overline"><span>AI RESULT</span><span class="tiny-indicator"><i></i> LIVE</span></div>
+            <div class="result-overline"><span>AI RESULT</span><span class="tiny-indicator"><i></i> PHOTO</span></div>
             <div class="result-center">
               <div class="result-await" id="resultAwait">
                 <span class="await-icon">
                   <svg viewBox="0 0 48 48" width="52" height="52" fill="none" aria-hidden="true"><path d="m9 15 3.7 26h22.6L39 15" stroke="currentColor" stroke-width="2.5" stroke-linejoin="round"/><ellipse cx="24" cy="15" rx="15" ry="5" stroke="currentColor" stroke-width="2.5"/><path d="M24 24v9m-4.5-4.5h9" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>
                 </span>
-                <strong id="resultWaitingTitle">아무것도 없음</strong>
-                <p id="resultWaitingDetail">컵 하나를 비춰주세요.</p>
+                <strong id="resultWaitingTitle">촬영 대기</strong>
+                <p id="resultWaitingDetail">사진을 찍으면 결과가 나옵니다.</p>
               </div>
               <div class="result-found" id="resultFound" hidden>
                 <span class="found-type" id="foundType">PAPER CUP</span>
@@ -127,16 +129,16 @@
 
           </aside>
         </div>
-        <div class="below-scan"><span>AI는 겉모습으로 재질을 추정합니다. 코팅된 종이컵·불투명 플라스틱컵 등은 틀릴 수 있습니다.</span><button type="button" id="helpBtn">이용 안내</button></div>
+        <div class="below-scan"><span>사진 한 장에서 컵의 외형을 분석합니다. 겉모습이 비슷한 재질은 잘못 판단할 수 있습니다.</span><button type="button" id="helpBtn">이용 안내</button></div>
         <div class="help-panel" id="helpPanel" hidden>
   <b>정확도를 높이려면</b>
   <p>조명과 배경이 일정한 곳에서 컵을 하나씩 비춰주세요. 재질이 비슷해 보이면 인식이 틀릴 수 있습니다.</p>
   <div class="calibration-area">
     <b>시연용 컵 보정 <span class="calibration-optional">(선택)</span></b>
-    <p>실제 종이컵 또는 플라스틱컵을 카메라 중앙에 보여주고 아래 버튼을 누르세요. 약 3초 동안 특징을 수집합니다. 영상은 저장하지 않습니다.</p>
+    <p>사진 촬영 후 결과가 틀렸다면 실제 컵에 맞는 버튼을 눌러주세요. 사진이 아닌 AI 특징만 이 브라우저에 저장됩니다. 각 컵을 다른 각도에서 2~3장 등록하면 도움이 됩니다.</p>
     <div class="calibration-actions">
-      <button type="button" data-train="paper">종이컵 보정</button>
-      <button type="button" data-train="plastic">플라스틱컵 보정</button>
+      <button type="button" data-train="paper">이 사진은 종이컵</button>
+      <button type="button" data-train="plastic">이 사진은 플라스틱컵</button>
       <button type="button" id="resetTraining">초기화</button>
     </div>
     <p id="trainStatus" aria-live="polite">보정 없이도 기본 모델을 사용할 수 있습니다.</p>
