@@ -126,6 +126,38 @@ function progressCallback(info){
   showLoading('AI 모델을 불러오고 있어요','처음 실행 시 파일을 다운로드합니다.');
  }
 }
+async function loadMobileCLIP(lib){
+ // The MobileCLIP S0 repository contains two separate ONNX models:
+ // onnx/text_model_quantized.onnx and onnx/vision_model_quantized.onnx.
+ // A zero-shot image pipeline would request missing onnx/model_quantized.onnx.
+ const required=['AutoTokenizer','CLIPTextModelWithProjection','AutoProcessor','CLIPVisionModelWithProjection','RawImage','dot','softmax'];
+ const missing=required.filter(key=>!lib[key]);
+ if(missing.length)throw Error('AI 라이브러리에 필요한 기능이 없습니다: '+missing.join(', '));
+ const modelOptions={device:'wasm',dtype:'q8',progress_callback:progressCallback};
+ showLoading('AI 모델을 불러오고 있어요','문장 분석 모델을 준비 중입니다.');
+ const tokenizer=await lib.AutoTokenizer.from_pretrained(MODEL_ID,{progress_callback:progressCallback});
+ const textModel=await lib.CLIPTextModelWithProjection.from_pretrained(MODEL_ID,modelOptions);
+ const tokens=tokenizer(LABELS,{padding:'max_length',truncation:true});
+ const {text_embeds}=await textModel(tokens);
+ const textVectors=text_embeds.normalize().tolist();
+ if(!Array.isArray(textVectors)||textVectors.length!==LABELS.length)throw Error('문장 특징을 계산하지 못했습니다.');
+ // Text embeddings are fixed; keep only their vectors during camera inference.
+ if(typeof textModel.dispose==='function')await textModel.dispose();
+ showLoading('AI 모델을 불러오고 있어요','영상 분석 모델을 준비 중입니다.');
+ const processor=await lib.AutoProcessor.from_pretrained(MODEL_ID,{progress_callback:progressCallback});
+ const visionModel=await lib.CLIPVisionModelWithProjection.from_pretrained(MODEL_ID,modelOptions);
+ return async function classifyCanvas(canvas){
+  const frame=lib.RawImage.fromCanvas(canvas);
+  const imageInputs=await processor(frame);
+  const {image_embeds}=await visionModel(imageInputs);
+  const imageVectors=image_embeds.normalize().tolist();
+  const imageVector=imageVectors?.[0];
+  if(!imageVector)throw Error('영상 특징을 계산하지 못했습니다.');
+  // Softmax outputs relative similarities, not physical material probabilities.
+  const probs=lib.softmax(textVectors.map(vector=>100*lib.dot(imageVector,vector)));
+  return LABELS.map((label,i)=>({label,score:Number(probs[i])})).sort((a,b)=>b.score-a.score);
+ };
+}
 async function getModel(){
  if(state.model)return state.model;
  if(state.modelPromise)return state.modelPromise;
@@ -134,18 +166,14 @@ async function getModel(){
   for(const source of SOURCES){
    try{
     const lib=await import(source);
-    if(!lib.pipeline)throw Error('이미지 분류 기능을 찾지 못했습니다.');
-    // MobileCLIP-S0: smaller than CLIP ViT-B/32; runs locally after download.
-    const model=await lib.pipeline('zero-shot-image-classification',MODEL_ID,{
-      device:'wasm',dtype:'q8',progress_callback:progressCallback
-    });
-    return model;
-   }catch(err){
-    lastError=err;
-    console.warn('[컵체크] 모델 주소 재시도',source,err);
+    return await loadMobileCLIP(lib);
+   }catch(error){
+    lastError=error;
+    console.warn('[컵체크] AI 로딩 재시도',source,error);
+    // A model or network error can still be diagnosed in the error message.
    }
   }
-  throw lastError||Error('AI 모델을 준비할 수 없습니다.');
+  throw lastError||Error('AI 모델을 불러오지 못했습니다.');
  })();
  try{state.model=await state.modelPromise;return state.model;}
  finally{state.modelPromise=null;}
@@ -290,7 +318,7 @@ async function analyze(token){
  if(document.hidden){scheduleNext(token,650);return;}
  if(!snapshot()){scheduleNext(token,350);return;}
  try{
-  const output=await state.model($('sampleCanvas'),LABELS,{topk:LABELS.length});
+  const output=await state.model($('sampleCanvas'));
   if(token!==state.token||!state.running)return;
   renderResult(interpret(output));
  }catch(err){
