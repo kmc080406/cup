@@ -6,8 +6,8 @@
   <meta name="theme-color" content="#f7f8f3">
   <meta name="description" content="종이컵과 플라스틱컵을 카메라로 구분하는 CODEMATE AI 체험 웹사이트">
   <title>컵체크. | 종이컵 · 플라스틱컵 구분</title>
-  <link rel="stylesheet" href="./style.css?v=1">
-  <script defer src="./app.js?v=2"></script>
+  <link rel="stylesheet" href="./style.css?v=2">
+  <script defer src="./app.js?v=3"></script>
 </head>
 <body>
   <div class="page-shell">
@@ -109,31 +109,39 @@
           </div>
 
           <aside class="result-panel" aria-label="재질 분석 결과" aria-live="polite">
-            <div class="result-overline"><span>ANALYSIS RESULT</span><span class="tiny-indicator"><i></i> AI VISION</span></div>
+            <div class="result-overline"><span>AI RESULT</span><span class="tiny-indicator"><i></i> LIVE</span></div>
             <div class="result-center">
               <div class="result-await" id="resultAwait">
                 <span class="await-icon">
                   <svg viewBox="0 0 48 48" width="52" height="52" fill="none" aria-hidden="true"><path d="m9 15 3.7 26h22.6L39 15" stroke="currentColor" stroke-width="2.5" stroke-linejoin="round"/><ellipse cx="24" cy="15" rx="15" ry="5" stroke="currentColor" stroke-width="2.5"/><path d="M24 24v9m-4.5-4.5h9" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>
                 </span>
-                <strong id="resultWaitingTitle">컵을 보여주세요</strong>
-                <p id="resultWaitingDetail">카메라에 비춘 컵을 분석합니다.</p>
+                <strong id="resultWaitingTitle">아무것도 없음</strong>
+                <p id="resultWaitingDetail">컵 하나를 비춰주세요.</p>
               </div>
               <div class="result-found" id="resultFound" hidden>
                 <span class="found-type" id="foundType">PAPER CUP</span>
-                <strong class="found-title" id="foundTitle">종이컵<span>!</span></strong>
-                <p class="found-subtitle" id="foundSubtitle">AI가 종이컵에 더 가깝다고 판단했습니다.</p>
+                <strong class="found-title" id="foundTitle">종이컵</strong>
+                
               </div>
             </div>
-            <div class="result-bottom">
-              <div class="compare-label"><span>두 재질의 상대 비교 점수</span><span id="analysisState">분석 전</span></div>
-              <div class="score-row"><div class="score-header"><span>종이컵</span><span id="paperValue">—</span></div><div class="score-track"><div id="paperBar" class="score-fill paper-fill"></div></div></div>
-              <div class="score-row"><div class="score-header"><span>플라스틱컵</span><span id="plasticValue">—</span></div><div class="score-track"><div id="plasticBar" class="score-fill plastic-fill"></div></div></div>
-              <p class="score-note">점수는 두 후보의 상대 비교값이며, 실제 정답 확률을 뜻하지 않습니다.</p>
-            </div>
+
           </aside>
         </div>
         <div class="below-scan"><span>AI는 겉모습으로 재질을 추정합니다. 코팅된 종이컵·불투명 플라스틱컵 등은 틀릴 수 있습니다.</span><button type="button" id="helpBtn">이용 안내</button></div>
-        <div class="help-panel" id="helpPanel" hidden><b>더 잘 구분하려면</b> 컵을 하나만 비추고, 충분한 밝기에서 컵의 옆면이 보이게 해주세요. 처음 실행 시 약 50~70MB의 모델 파일을 다운로드할 수 있습니다. 카메라 화면은 저장하거나 서버로 전송하지 않습니다.</div>
+        <div class="help-panel" id="helpPanel" hidden>
+  <b>정확도를 높이려면</b>
+  <p>조명과 배경이 일정한 곳에서 컵을 하나씩 비춰주세요. 재질이 비슷해 보이면 인식이 틀릴 수 있습니다.</p>
+  <div class="calibration-area">
+    <b>시연용 컵 보정 <span class="calibration-optional">(선택)</span></b>
+    <p>실제 종이컵 또는 플라스틱컵을 카메라 중앙에 보여주고 아래 버튼을 누르세요. 약 3초 동안 특징을 수집합니다. 영상은 저장하지 않습니다.</p>
+    <div class="calibration-actions">
+      <button type="button" data-train="paper">종이컵 보정</button>
+      <button type="button" data-train="plastic">플라스틱컵 보정</button>
+      <button type="button" id="resetTraining">초기화</button>
+    </div>
+    <p id="trainStatus" aria-live="polite">보정 없이도 기본 모델을 사용할 수 있습니다.</p>
+  </div>
+</div>
       </section>
     </main>
 
