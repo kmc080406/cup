@@ -5,7 +5,7 @@ const MODEL_ID='Xenova/mobileclip_s0';
 const MP_VERSION='0.10.22-rc.20250304';
 const MP_CDN=`https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MP_VERSION}`;
 const DETECTOR_MODEL='https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float16/1/efficientdet_lite0.tflite';
-const TRAIN_KEY='cupcheck-material-prototypes-v1';
+const TRAIN_KEY='cupcheck-material-examples-v2';
 const SOURCES=[
   'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1',
   'https://esm.sh/@huggingface/transformers@3.8.1'
@@ -25,7 +25,7 @@ const OPTIONS=[
 const LABELS=OPTIONS.map(x=>x.label);
 const state={
   page:'home',stream:null,side:'environment',running:false,starting:false,token:0,
-  model:null,modelPromise:null,detector:null,detectorPromise:null,analysisTimer:null,history:[],misses:0,training:null,trained:{},lastSuccess:0
+  model:null,modelPromise:null,detector:null,detectorPromise:null,photoCaptured:false,photoBusy:false,shotSeq:0,lastEmbedding:null,trained:{paper:[],plastic:[]}
 };
 function showPage(page){
  state.page=page;
@@ -41,7 +41,7 @@ function status(msg,live){
  $('cameraState').textContent=msg;
  $('livePip').classList.toggle('is-live',!!live);
 }
-function clearResults(label='아무것도 없음'){
+function clearResults(label='촬영 대기'){
  $('resultAwait').hidden=false;
  $('resultFound').hidden=true;
  $('resultWaitingTitle').textContent=label;
@@ -88,12 +88,31 @@ function showError(err,stage){
  $('errorTitle').textContent=info[0];
  $('errorDescription').textContent=info[1];
  status('연결 실패',false);
- clearResults('인식할 수 없어요','오류 내용을 확인하고 다시 시도해 주세요.');
+ clearResults('분석 실패');
  
 }
+function setShutter(mode){
+ const button=$('captureBtn');
+ const label=$('captureLabel');
+ if(mode==='loading'){
+  button.disabled=true;button.classList.remove('is-retake');label.textContent='준비 중';
+ }else if(mode==='ready'){
+  button.disabled=false;button.classList.remove('is-retake');label.textContent='사진 찍기';
+ }else if(mode==='processing'){
+  button.disabled=true;button.classList.remove('is-retake');label.textContent='분석 중';
+ }else{
+  button.disabled=false;button.classList.add('is-retake');label.textContent='다시 촬영';
+ }
+}
+function thawPhoto(){
+ $('cameraPanel').classList.remove('is-frozen');
+ $('frozenCanvas').hidden=true;
+ state.photoCaptured=false;
+ state.lastEmbedding=null;
+ state.photoBusy=false;
+}
 function stopCamera(){
- state.running=false;
- if(state.analysisTimer){clearTimeout(state.analysisTimer);state.analysisTimer=null;}
+ state.running=false;state.shotSeq++;
  if(state.stream){state.stream.getTracks().forEach(track=>track.stop());state.stream=null;}
  const camera=$('camera');
  try{camera.pause();camera.srcObject=null;}catch(_){}
@@ -101,19 +120,14 @@ function stopCamera(){
 }
 function cancel(){
  ++state.token;
- stopCamera();
+ stopCamera();thawPhoto();
  state.starting=false;
- state.history=[];
- state.misses=0;
- state.training=null;
- $('startBtn').disabled=false;
- $('flipBtn').disabled=false;
- $('retryBtn').disabled=false;
+ $('startBtn').disabled=false;$('flipBtn').disabled=false;$('retryBtn').disabled=false;
+ setShutter('loading');
 }
 function backHome(){
- cancel();
- state.side='environment';
- clearResults();
+ cancel();state.side='environment';
+ clearResults('촬영 대기');
  showPage('home');
 }
 function progressCallback(info){
@@ -189,7 +203,7 @@ async function getDetector(){
   const files=await mp.FilesetResolver.forVisionTasks(MP_CDN+'/wasm');
   return await mp.ObjectDetector.createFromOptions(files,{
     baseOptions:{modelAssetPath:DETECTOR_MODEL,delegate:'CPU'},
-    runningMode:'VIDEO',scoreThreshold:.22,maxResults:7
+    runningMode:'IMAGE',scoreThreshold:.15,maxResults:10
   });
  })();
  try{state.detector=await state.detectorPromise;return state.detector;}
@@ -197,8 +211,8 @@ async function getDetector(){
 }
 function cupBox(detections,width,height){
  const cups=(detections||[])
-  .filter(d=>(d.categories||[]).some(c=>String(c.categoryName||c.displayName||'').toLowerCase()==='cup'))
-  .filter(d=>d.boundingBox && d.boundingBox.width*d.boundingBox.height>width*height*.009);
+  .filter(d=>(d.categories||[]).some(c=>String(c.categoryName||c.displayName||'').toLowerCase()==='cup'||String(c.categoryName||c.displayName||'').toLowerCase()==='wine glass'))
+  .filter(d=>d.boundingBox && d.boundingBox.width*d.boundingBox.height>width*height*.005);
  if(!cups.length)return null;
  const metric=d=>{
   const b=d.boundingBox,cx=b.originX+b.width/2,cy=b.originY+b.height/2;
@@ -208,78 +222,124 @@ function cupBox(detections,width,height){
  cups.sort((a,b)=>metric(b)-metric(a));
  return cups[0].boundingBox;
 }
+function normalizeVector(vector){
+ if(!Array.isArray(vector)||!vector.length)return null;
+ const length=Math.sqrt(vector.reduce((s,v)=>s+v*v,0))||1;
+ return vector.map(x=>x/length);
+}
+function similarity(a,b){
+ if(!Array.isArray(a)||!Array.isArray(b)||a.length!==b.length)return -1;
+ let sum=0;for(let i=0;i<a.length;i++)sum+=a[i]*b[i];
+ return sum;
+}
 function openFeatureStore(){
  try{
   const raw=JSON.parse(localStorage.getItem(TRAIN_KEY)||'{}');
-  for(const k of ['paper','plastic']){
-   if(Array.isArray(raw[k])&&raw[k].length>=128&&raw[k].length<=1024&&raw[k].every(Number.isFinite))state.trained[k]=raw[k];
+  for(const type of ['paper','plastic']){
+   if(Array.isArray(raw[type])){
+    state.trained[type]=raw[type].filter(v=>Array.isArray(v)&&v.length>=128&&v.length<=1024&&v.every(Number.isFinite)).slice(-12);
+   }
   }
- }catch(err){console.warn('[컵체크] 보정 데이터 미사용',err);}
+ }catch(err){console.warn('[컵체크] 저장된 보정 데이터 사용 불가',err);}
  trainingMessage();
 }
 function trainingMessage(message){
  if(message){$('trainStatus').textContent=message;return;}
- const classes=['paper','plastic'].filter(k=>state.trained[k]);
- $('trainStatus').textContent=classes.length===2?'종이컵·플라스틱컵 보정이 완료됐습니다.':
- classes.length===1?'한 종류 보정 완료. 두 컵을 모두 보정하면 인식에 도움이 됩니다.':
- '보정하지 않아도 기본 모델을 사용할 수 있습니다.';
+ const paper=state.trained.paper.length,plastic=state.trained.plastic.length;
+ $('trainStatus').textContent=paper||plastic
+  ? '등록된 사진 특징: 종이컵 '+paper+'장 · 플라스틱컵 '+plastic+'장 (이 기기에만 저장됨)'
+  : '촬영한 사진의 결과가 틀렸을 때 올바른 컵을 등록해 주세요.';
 }
-function normalized(v){
- const length=Math.sqrt(v.reduce((s,x)=>s+x*x,0))||1;
- return v.map(x=>x/length);
-}
-function cosine(a,b){
- if(!Array.isArray(a)||!Array.isArray(b)||a.length!==b.length)return -1;
- let s=0;for(let i=0;i<a.length;i++)s+=a[i]*b[i];
- return s;
-}
-function classifyMaterial({scores,embedding}){
+function weightedModelVote(result){
  const sums={paper:0,plastic:0};
- for(const r of scores||[]){
-  const p=OPTIONS.find(o=>o.label===r.label);
-  if((p?.group==='paper'||p?.group==='plastic')&&Number.isFinite(r.score))sums[p.group]+=r.score;
+ for(const entry of result.scores||[]){
+  const opt=OPTIONS.find(o=>o.label===entry.label);
+  if((opt?.group==='paper'||opt?.group==='plastic')&&Number.isFinite(entry.score))sums[opt.group]+=entry.score;
  }
- const share=sums.paper/Math.max(.00001,sums.paper+sums.plastic);
- if(state.trained.paper&&state.trained.plastic){
-  const paper=cosine(embedding,state.trained.paper),plastic=cosine(embedding,state.trained.plastic);
-  if(Math.max(paper,plastic)>.55&&Math.abs(paper-plastic)>.012)return paper>plastic?'paper':'plastic';
+ return sums.paper/Math.max(1e-7,sums.paper+sums.plastic);
+}
+function classifyMaterial(result){
+ const share=weightedModelVote(result);
+ const a=state.trained.paper,b=state.trained.plastic;
+ if(a.length>0&&b.length>0&&Array.isArray(result.embedding)){
+  const paper=Math.max(...a.map(ex=>similarity(ex,result.embedding)));
+  const plastic=Math.max(...b.map(ex=>similarity(ex,result.embedding)));
+  // Personal examples are more relevant to the actual cups used at the presentation.
+  if(Math.max(paper,plastic)>.58&&Math.abs(paper-plastic)>.013){
+   return paper>plastic?'paper':'plastic';
+  }
  }
- if(share>.55)return 'paper';
- if(share<.45)return 'plastic';
+ if(share>.54)return 'paper';
+ if(share<.46)return 'plastic';
  return null;
 }
-function addTrainingSample(embedding){
- const t=state.training;
- if(!t||!Array.isArray(embedding)||!embedding.length)return;
- t.samples.push(embedding);
- trainingMessage((t.type==='paper'?'종이컵':'플라스틱컵')+' 보정 중 · '+t.samples.length+'/5');
- if(t.samples.length<5)return;
- const len=t.samples[0].length;
- const avg=Array.from({length:len},(_,i)=>t.samples.reduce((s,v)=>s+v[i],0)/t.samples.length);
- state.trained[t.type]=normalized(avg);
- state.training=null;
- try{localStorage.setItem(TRAIN_KEY,JSON.stringify(state.trained));}catch(_){}
- trainingMessage();
+function saveCrop(source,b,scale=1.26){
+ const canvas=$('sampleCanvas'),w=source.width,h=source.height;
+ if(!w||!h)return false;
+ const cx=b.originX+b.width/2,cy=b.originY+b.height/2;
+ const side=Math.min(Math.max(b.width,b.height)*scale,Math.min(w,h));
+ const x=Math.max(0,Math.min(w-side,cx-side/2));
+ const y=Math.max(0,Math.min(h-side,cy-side/2));
+ canvas.getContext('2d',{willReadFrequently:true}).drawImage(source,x,y,side,side,0,0,canvas.width,canvas.height);
+ return true;
 }
-function beginTraining(type){
- if(!state.running){trainingMessage('카메라를 시작한 뒤 보정해 주세요.');return;}
- state.training={type,samples:[]};state.history=[];
- trainingMessage((type==='paper'?'종이컵':'플라스틱컵')+'을 가운데 보여주세요.');
+function centralCrop(source){
+ const w=source.width,h=source.height;
+ const side=Math.min(w,h)*.74;
+ return {originX:(w-side)/2,originY:(h-side)/2,width:side,height:side};
+}
+async function extractCupFeatures(captured,box){
+ if(!saveCrop(captured,box,1.15))throw Error('사진을 읽을 수 없습니다.');
+ const first=await state.model($('sampleCanvas'));
+ // Analyze the same frozen image at two crops, not two camera frames.
+ if(!saveCrop(captured,box,1.48))throw Error('사진을 읽을 수 없습니다.');
+ const second=await state.model($('sampleCanvas'));
+ const combine=first.scores.map((entry,i)=>({
+  label:entry.label,score:.65*entry.score+.35*(second.scores[i]?.score||0)
+ }));
+ const avg=first.embedding.map((x,i)=>.65*x+.35*(second.embedding[i]||0));
+ return{scores:combine,embedding:normalizeVector(avg)};
+}
+function showAnswer(type){
+ const panel=$('resultFound').parentElement.parentElement;
+ if(type==='paper'||type==='plastic'){
+  $('resultAwait').hidden=true;$('resultFound').hidden=false;
+  $('foundTitle').textContent=type==='paper'?'종이컵':'플라스틱컵';
+  panel.classList.toggle('is-plastic',type==='plastic');
+ }else{
+  $('resultAwait').hidden=false;$('resultFound').hidden=true;
+  $('resultWaitingTitle').textContent=type==='unknown'?'판별 어려움':'아무것도 없음';
+  $('resultWaitingDetail').textContent='';
+  panel.classList.remove('is-plastic');
+ }
+}
+async function registerPhoto(type){
+ if(!state.photoCaptured||state.photoBusy){
+  trainingMessage('먼저 사진을 찍고 분석이 끝난 뒤 등록해 주세요.');
+  return;
+ }
+ const shot=state.shotSeq;const captured=$('frozenCanvas');
+ if(!state.lastEmbedding){
+  trainingMessage('사진의 특징을 분석하고 있습니다.');
+  try{
+   const result=await extractCupFeatures(captured,centralCrop(captured));
+   if(shot!==state.shotSeq)return;
+   state.lastEmbedding=result.embedding;
+  }catch(err){
+   trainingMessage('특징을 계산하지 못했습니다. 다시 촬영해 주세요.');
+   return;
+  }
+ }
+ if(!state.lastEmbedding)return;
+ state.trained[type].push([...state.lastEmbedding]);
+ state.trained[type]=state.trained[type].slice(-12);
+ try{localStorage.setItem(TRAIN_KEY,JSON.stringify(state.trained));}catch(err){console.warn('[컵체크] 보정 저장 실패',err);}
+ showAnswer(type);trainingMessage();
 }
 function resetTraining(){
- state.training=null;state.trained={};
+ state.trained={paper:[],plastic:[]};
  try{localStorage.removeItem(TRAIN_KEY);}catch(_){}
- trainingMessage('보정을 초기화했습니다.');
-}
-function saveCrop(b){
- const v=$('camera'),canvas=$('sampleCanvas'),width=v.videoWidth,height=v.videoHeight;
- if(!width||!height)return false;
- const cx=b.originX+b.width/2,cy=b.originY+b.height/2;
- const side=Math.max(b.width,b.height)*1.32;
- const w=Math.min(width,side),h=Math.min(height,side);
- const x=Math.min(width-w,Math.max(0,cx-w/2)),y=Math.min(height-h,Math.max(0,cy-h/2));
- canvas.getContext('2d',{willReadFrequently:true}).drawImage(v,x,y,w,h,0,0,canvas.width,canvas.height);
- return true;
+ trainingMessage('등록된 컵 특징을 초기화했습니다.');
 }
 async function openCamera(side,token){
  if(!window.isSecureContext){const e=Error('HTTPS required');e.name='NoSecureContext';throw e;}
@@ -304,117 +364,88 @@ async function openCamera(side,token){
 async function begin(side=state.side){
  if(state.starting)return;
  const token=++state.token;
- state.starting=true;
- stopCamera();
- state.history=[];
- state.misses=0;
- state.training=null;
- state.side=side;
- showPage('scan');
- clearResults('준비하고 있어요','카메라와 AI 모델을 연결하는 중입니다.');
- showLoading('카메라 연결 중','브라우저의 카메라 사용 권한을 허용해 주세요.');
- status('준비 중',false);
- $('flipBtn').disabled=true;
- $('retryBtn').disabled=true;
+ state.starting=true;stopCamera();thawPhoto();state.side=side;
+ showPage('scan');clearResults('촬영 대기');
+ showLoading('카메라 연결 중','브라우저에서 카메라 사용을 허용해 주세요.');
+ status('준비 중',false);setShutter('loading');
+ $('flipBtn').disabled=true;$('retryBtn').disabled=true;
  let stage='camera';
  try{
   await openCamera(side,token);
   if(token!==state.token)return;
-  status('카메라 연결됨',true);
   stage='model';
-  showLoading('컵 탐지 AI를 불러오고 있어요','컵이 보이는지 먼저 확인합니다.');
+  showLoading('AI를 불러오고 있어요','컵 탐지 및 재질 분석 모델을 준비 중입니다.');
   await getDetector();
   if(token!==state.token)return;
-  showLoading('재질 분석 AI를 불러오고 있어요','처음 실행 시 모델을 다운로드합니다.');
   await getModel();
   if(token!==state.token)return;
   $('cameraOverlay').hidden=true;
   state.running=true;
-  status('분석 중',true);
-  clearResults('아무것도 없음');
-  const track=state.stream?.getVideoTracks()[0];
-  track?.addEventListener('ended',()=>{
+  status('촬영 준비 완료',true);
+  setShutter('ready');
+  clearResults('촬영 대기');
+  state.stream?.getVideoTracks()[0]?.addEventListener('ended',()=>{
    if(token!==state.token||!state.running)return;
-   stopCamera();
-   showError(Error('카메라 연결이 끊어졌습니다. 다시 시작해 주세요.'),'camera');
+   stopCamera();showError(Error('카메라 연결이 끊겼습니다.'),'camera');
   });
-  scheduleNext(token,320);
- }catch(err){
-  if(token===state.token){console.error('[컵체크] 시작 실패',stage,err);stopCamera();showError(err,stage);}
+ }catch(error){
+  if(token===state.token){console.error('[컵체크] 시작 실패',stage,error);stopCamera();showError(error,stage);}
  }finally{
   if(token===state.token){
    state.starting=false;
-   $('flipBtn').disabled=false;
-   $('retryBtn').disabled=false;
-   $('startBtn').disabled=false;
+   $('flipBtn').disabled=false;$('retryBtn').disabled=false;$('startBtn').disabled=false;
   }
  }
 }
-function showAnswer(type){
- const panel=$('resultFound').parentElement.parentElement;
- if(type==='paper'||type==='plastic'){
-  $('resultAwait').hidden=true;$('resultFound').hidden=false;
-  $('foundTitle').textContent=type==='paper'?'종이컵':'플라스틱컵';
-  panel.classList.toggle('is-plastic',type==='plastic');
- }else{
-  $('resultAwait').hidden=false;$('resultFound').hidden=true;
-  $('resultWaitingTitle').textContent=type==='unknown'?'판별 중':'아무것도 없음';
-  $('resultWaitingDetail').textContent='';
-  panel.classList.remove('is-plastic');
+async function capture(){
+ if(!state.running||state.photoBusy)return;
+ if(state.photoCaptured){
+  state.shotSeq++;thawPhoto();clearResults('촬영 대기');
+  setShutter('ready');status('촬영 준비 완료',true);
+  return;
  }
-}
-function updateStableMaterial(type){
- state.history.push(type);
- if(state.history.length>4)state.history.shift();
- const count=state.history.filter(x=>x===type).length;
- if(type&&count>=2)showAnswer(type);
- else if(!type&&state.history.length>=3)showAnswer('unknown');
-}
-function scheduleNext(token,delay){
- if(state.analysisTimer)clearTimeout(state.analysisTimer);
- state.analysisTimer=setTimeout(()=>analyze(token),delay);
-}
-async function analyze(token){
- if(!state.running||token!==state.token)return;
- if(document.hidden){scheduleNext(token,850);return;}
- const video=$('camera');
- if(video.readyState<2||!video.videoWidth){scheduleNext(token,380);return;}
+ const camera=$('camera');
+ if(camera.readyState<2||!camera.videoWidth)return;
+ const frozen=$('frozenCanvas');
+ frozen.width=camera.videoWidth;frozen.height=camera.videoHeight;
+ frozen.getContext('2d',{willReadFrequently:true}).drawImage(camera,0,0,frozen.width,frozen.height);
+ frozen.classList.toggle('is-back',camera.classList.contains('is-back'));
+ frozen.hidden=false;
+ $('cameraPanel').classList.add('is-frozen');
+ state.photoCaptured=true;state.photoBusy=true;state.lastEmbedding=null;
+ const shot=++state.shotSeq;
+ setShutter('processing');clearResults('분석 중');status('사진 분석 중',true);
  try{
-  const detections=state.detector.detectForVideo(video,performance.now());
-  const box=cupBox(detections?.detections,video.videoWidth,video.videoHeight);
+  const detections=state.detector.detect(frozen);
+  const box=cupBox(detections?.detections,frozen.width,frozen.height);
   if(!box){
-   state.misses++;
-   state.history=[];
-   if(state.misses>=2){
-    showAnswer(null);status('컵 없음',true);
-    if(state.training)trainingMessage('컵이 보이지 않습니다. 컵을 가운데 보여주세요.');
-   }
-   scheduleNext(token,550);return;
+   showAnswer(null);status('분석 완료',true);
+  }else{
+   const result=await extractCupFeatures(frozen,box);
+   if(shot!==state.shotSeq||!state.photoCaptured)return;
+   state.lastEmbedding=result.embedding;
+   showAnswer(classifyMaterial(result)||'unknown');
+   status('분석 완료',true);
   }
-  state.misses=0;status('컵 분석 중',true);
-  if(!saveCrop(box)){scheduleNext(token,400);return;}
-  const result=await state.model($('sampleCanvas'));
-  if(token!==state.token||!state.running)return;
-  if(state.training){
-   addTrainingSample(result.embedding);
-   scheduleNext(token,600);return;
-  }
-  updateStableMaterial(classifyMaterial(result));
-  scheduleNext(token,930);
  }catch(err){
-  if(token!==state.token)return;
-  console.error('[컵체크] 분석 오류',err);
-  stopCamera();showError(err,'model');
+  if(shot!==state.shotSeq)return;
+  console.error('[컵체크] 사진 분석 실패',err);
+  clearResults('분석 실패');
+  status('분석 실패',true);
+ }finally{
+  if(shot===state.shotSeq){state.photoBusy=false;setShutter('retake');}
  }
 }
+
 $('startBtn').addEventListener('click',()=>begin('environment'));
+$('captureBtn').addEventListener('click',capture);
 $('brandLink').addEventListener('click',e=>{e.preventDefault();backHome();});
 $('backBtn').addEventListener('click',backHome);
 $('retryBtn').addEventListener('click',()=>begin(state.side));
 $('flipBtn').addEventListener('click',()=>begin(state.side==='environment'?'user':'environment'));
 $('errorRetry').addEventListener('click',()=>begin(state.side));
 $('errorBack').addEventListener('click',backHome);
-document.querySelectorAll('[data-train]').forEach(b=>b.addEventListener('click',()=>beginTraining(b.dataset.train)));
+document.querySelectorAll('[data-train]').forEach(b=>b.addEventListener('click',()=>registerPhoto(b.dataset.train)));
 $('resetTraining').addEventListener('click',resetTraining);
 openFeatureStore();
 $('helpBtn').addEventListener('click',()=>{
@@ -423,10 +454,10 @@ $('helpBtn').addEventListener('click',()=>{
 });
 window.addEventListener('pagehide',cancel);
 document.addEventListener('visibilitychange',()=>{
- if(document.hidden){state.history=[];}
+ if(document.hidden){/* photo analysis is intentionally one-shot */}
 });
 window.__cupcheck={
  classifyMaterial,cupBox,
- getState:()=>({page:state.page,running:state.running,side:state.side,modelReady:!!state.model})
+ getState:()=>({page:state.page,running:state.running,side:state.side,photoCaptured:state.photoCaptured,modelReady:!!state.model})
 };
 })();
