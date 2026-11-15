@@ -1,39 +1,47 @@
 # 컵체크. — CODEMATE
 
-카메라로 **종이컵 / 플라스틱컵**을 구분하는 고등학교 코딩 동아리 CODEMATE의 웹 프로젝트입니다.
+종이컵과 플라스틱컵을 카메라로 구분하는 **학교 동아리 실험용** 웹사이트입니다.
 
-## 사용 방법
+## 체험하기
 
-1. https://kmc080406.github.io/cup/ 에 접속합니다. (GitHub Pages 활성화 필요)
-2. **시작하기**를 누르고 카메라 접근을 허용합니다.
-3. 종이컵 또는 플라스틱컵을 카메라 중앙에 하나씩 비춥니다.
-4. AI가 추정한 재질을 표시합니다. 모바일은 전·후면 카메라 전환이 가능합니다.
+https://kmc080406.github.io/cup/?v=3
 
-## 작동 원리
+1. **시작하기**를 누르고 카메라 사용을 허용합니다.
+2. 컵을 하나씩 카메라 가운데 비춥니다.
+3. 화면에는 **종이컵**, **플라스틱컵**, **아무것도 없음** 중 해당하는 결과가 크게 표시됩니다.
+4. 스마트폰에서는 전·후면 카메라를 전환할 수 있습니다.
 
-- 이미지와 문장을 비교하는 사전 학습 모델 **MobileCLIP-S0** (Hugging Face Transformers.js, `Xenova/mobileclip_s0`) 사용
-- **중요:** `pipeline()`은 이 모델에 없는 `onnx/model_quantized.onnx`를 요구하므로 사용하지 않습니다. `CLIPTextModelWithProjection` 및 `CLIPVisionModelWithProjection`을 별도로 불러옵니다.
-- 각각 존재하는 `onnx/text_model_quantized.onnx`(약 43MB)와 `onnx/vision_model_quantized.onnx`(약 12MB)를 사용하는 양자화 모델
-- 브라우저 내부에서 카메라 프레임(중앙부)을 분석하고, 종이컵·플라스틱컵의 설명문과 얼마나 유사한지 비교
-- 애매하거나 컵이 보이지 않는 경우 결과를 보류하도록 설계
-- 처음 실행 시 모델 파일 수십 MB를 다운로드해야 하므로 인터넷 연결이 필요합니다.
-- 두 재질의 **상대 비교 점수**는 분류 모델의 정답 확률이나 실물 재질 검증이 아닙니다.
+## 어떻게 작동하나요?
 
-**주의:** 이 모델은 종이컵·플라스틱컵 전용 학습 모델이 아닙니다. 종이 코팅, 투명하지 않은 플라스틱, 재사용 컵 등은 틀릴 수 있습니다. 실물 컵 여러 종류로 시연 정확도를 검증한 뒤 동아리 발표에 사용하세요.
+1. **MediaPipe ObjectDetector(EfficientDet-Lite0)** 가 화면에서 컵이 있는지 먼저 탐지합니다.
+2. 컵이 검출되지 않으면 `아무것도 없음`을 표시합니다.
+3. 검출된 컵 주변 영역을 잘라 **MobileCLIP-S0** 이미지/문장 특징으로 종이컵인지 플라스틱컵인지 추정합니다.
+4. 연속된 결과를 비교해 표시가 과도하게 흔들리지 않도록 합니다.
 
-## 프로젝트 구성
+비교 점수나 확률은 사용자에게 표시하지 않습니다. 두 모델은 브라우저 내에서 동작하며 카메라 영상은 저장하거나 업로드하지 않습니다. 첫 실행에는 인터넷 연결과 모델 다운로드가 필요합니다.
 
-- `index.html`: 시작 화면과 카메라·분류 결과 UI
-- `style.css`: PC·모바일 반응형 디자인
-- `app.js`: 카메라 제어, MobileCLIP 불러오기, 분류 및 결과 표시
+## 정확도 보정 (선택 사항)
 
-**개인정보:** 카메라 영상은 별도 서버에 업로드·저장하지 않습니다. 사전 학습 모델 파일을 다운로드해 브라우저에서 추론합니다.
+카메라 인식 페이지 하단의 **이용 안내**를 펼치면 `종이컵 보정` 및 `플라스틱컵 보정` 버튼이 있습니다.
 
-## GitHub Pages
+- 실제로 시연할 종이컵을 카메라에 비춘 상태에서 종이컵 보정을 누르고 다섯 번의 특징 수집이 끝날 때까지 움직이지 않습니다.
+- 플라스틱컵도 동일하게 보정합니다.
+- 두 컵을 모두 보정하면 해당 브라우저에서 저장된 이미지 특징과 비교하여 분류합니다.
+- 저장되는 것은 특징 벡터이며 사진이나 동영상은 아닙니다. 초기화로 삭제할 수 있습니다.
 
-저장소 **Settings → Pages → Build and deployment → Deploy from a branch → main / (root)**를 설정합니다. HTTPS에서 카메라 기능을 사용할 수 있습니다.
+## 제약 사항
 
-## 참고
+이 웹사이트는 **물리적 재질 검사기가 아닙니다.** 학습된 이미지에서 보이는 시각적 특징을 이용해 추정합니다. 코팅된 종이컵, 불투명 플라스틱컵처럼 외형이 비슷한 컵은 여전히 오분류될 수 있습니다. 객체 탐지 모델이 컵을 찾지 못하는 경우 실제로 컵이 있어도 `아무것도 없음`이 표시될 수 있습니다. 발표용으로 쓰기 전에 사용할 실제 컵과 휴대폰으로 검증해야 합니다.
 
-- [Hugging Face Transformers.js](https://huggingface.co/docs/transformers.js/v3.8.1/en/installation)
-- [MobileCLIP-S0 Transformers.js ONNX 모델](https://huggingface.co/Xenova/mobileclip_s0)
+## 구성
+
+- `index.html`: 시작 화면, 카메라 및 결과 화면
+- `style.css`: PC·모바일 반응형 화면
+- `app.js`: 카메라, 컵 객체 탐지, 재질 비교, 보정 기능
+
+GitHub Pages: 저장소 **Settings → Pages → Deploy from a branch → main / (root)**
+
+## 사용 모델
+
+- [Google MediaPipe ObjectDetector / EfficientDet-Lite0](https://developers.google.com/edge/mediapipe/solutions/vision/object_detector)
+- [Xenova/mobileclip_s0](https://huggingface.co/Xenova/mobileclip_s0)
