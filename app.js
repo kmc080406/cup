@@ -2,6 +2,10 @@
 'use strict';
 const $=id=>document.getElementById(id);
 const MODEL_ID='Xenova/mobileclip_s0';
+const MP_VERSION='0.10.22-rc.20250304';
+const MP_CDN=`https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MP_VERSION}`;
+const DETECTOR_MODEL='https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float16/1/efficientdet_lite0.tflite';
+const TRAIN_KEY='cupcheck-material-prototypes-v1';
 const SOURCES=[
   'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1',
   'https://esm.sh/@huggingface/transformers@3.8.1'
@@ -21,7 +25,7 @@ const OPTIONS=[
 const LABELS=OPTIONS.map(x=>x.label);
 const state={
   page:'home',stream:null,side:'environment',running:false,starting:false,token:0,
-  model:null,modelPromise:null,analysisTimer:null,history:[],lastSuccess:0
+  model:null,modelPromise:null,detector:null,detectorPromise:null,analysisTimer:null,history:[],misses:0,training:null,trained:{},lastSuccess:0
 };
 function showPage(page){
  state.page=page;
@@ -37,16 +41,11 @@ function status(msg,live){
  $('cameraState').textContent=msg;
  $('livePip').classList.toggle('is-live',!!live);
 }
-function clearResults(title='컵을 보여주세요',detail='카메라에 비춘 컵을 분석합니다.'){
+function clearResults(label='아무것도 없음'){
  $('resultAwait').hidden=false;
  $('resultFound').hidden=true;
- $('resultWaitingTitle').textContent=title;
- $('resultWaitingDetail').textContent=detail;
- $('paperBar').style.width='0%';
- $('plasticBar').style.width='0%';
- $('paperValue').textContent='—';
- $('plasticValue').textContent='—';
- $('analysisState').textContent='분석 전';
+ $('resultWaitingTitle').textContent=label;
+ $('resultWaitingDetail').textContent='';
  $('resultFound').parentElement.parentElement.classList.remove('is-plastic');
 }
 function showLoading(title,detail,progress=null){
@@ -77,7 +76,7 @@ function messageForError(error,stage){
   return ['이 브라우저에서는 카메라를 사용할 수 없어요','앱 내부 미리보기가 아닌 Chrome 또는 Safari에서 주소를 직접 열어 주세요.'];
  }
  if(stage==='model'){
-  return ['AI 모델을 불러오지 못했어요','처음 실행에는 약 50~70MB의 모델 파일이 필요합니다. 인터넷 연결을 확인해 주세요. ('+String(error?.message||n).slice(0,140)+')'];
+  return ['AI 모델을 불러오지 못했어요','AI 파일 다운로드에 실패했습니다. 연결 상태를 확인해 주세요. ('+String(error?.message||n).slice(0,150)+')'];
  }
  return ['카메라를 시작하지 못했어요',String(error?.message||'브라우저와 카메라 권한을 확인해 주세요.').slice(0,180)];
 }
@@ -90,7 +89,7 @@ function showError(err,stage){
  $('errorDescription').textContent=info[1];
  status('연결 실패',false);
  clearResults('인식할 수 없어요','오류 내용을 확인하고 다시 시도해 주세요.');
- $('analysisState').textContent='연결 실패';
+ 
 }
 function stopCamera(){
  state.running=false;
@@ -105,6 +104,8 @@ function cancel(){
  stopCamera();
  state.starting=false;
  state.history=[];
+ state.misses=0;
+ state.training=null;
  $('startBtn').disabled=false;
  $('flipBtn').disabled=false;
  $('retryBtn').disabled=false;
@@ -155,7 +156,7 @@ async function loadMobileCLIP(lib){
   if(!imageVector)throw Error('영상 특징을 계산하지 못했습니다.');
   // Softmax outputs relative similarities, not physical material probabilities.
   const probs=lib.softmax(textVectors.map(vector=>100*lib.dot(imageVector,vector)));
-  return LABELS.map((label,i)=>({label,score:Number(probs[i])})).sort((a,b)=>b.score-a.score);
+  return {scores:LABELS.map((label,i)=>({label,score:Number(probs[i])})),embedding:imageVector};
  };
 }
 async function getModel(){
@@ -178,16 +179,115 @@ async function getModel(){
  try{state.model=await state.modelPromise;return state.model;}
  finally{state.modelPromise=null;}
 }
+async function getDetector(){
+ if(state.detector)return state.detector;
+ if(state.detectorPromise)return state.detectorPromise;
+ state.detectorPromise=(async()=>{
+  const pkg=await import(MP_CDN+'/vision_bundle.mjs');
+  const mp=pkg.ObjectDetector&&pkg.FilesetResolver?pkg:pkg.default;
+  if(!mp?.ObjectDetector||!mp?.FilesetResolver)throw Error('컵 탐지 모듈이 없습니다.');
+  const files=await mp.FilesetResolver.forVisionTasks(MP_CDN+'/wasm');
+  return await mp.ObjectDetector.createFromOptions(files,{
+    baseOptions:{modelAssetPath:DETECTOR_MODEL,delegate:'CPU'},
+    runningMode:'VIDEO',scoreThreshold:.22,maxResults:7
+  });
+ })();
+ try{state.detector=await state.detectorPromise;return state.detector;}
+ finally{state.detectorPromise=null;}
+}
+function cupBox(detections,width,height){
+ const cups=(detections||[])
+  .filter(d=>(d.categories||[]).some(c=>String(c.categoryName||c.displayName||'').toLowerCase()==='cup'))
+  .filter(d=>d.boundingBox && d.boundingBox.width*d.boundingBox.height>width*height*.009);
+ if(!cups.length)return null;
+ const metric=d=>{
+  const b=d.boundingBox,cx=b.originX+b.width/2,cy=b.originY+b.height/2;
+  const central=1-Math.min(1,Math.hypot(cx-width/2,cy-height/2)/Math.hypot(width/2,height/2));
+  return (d.categories[0]?.score||0)+.18*central+.09*Math.min(1,b.width*b.height/(width*height*.25));
+ };
+ cups.sort((a,b)=>metric(b)-metric(a));
+ return cups[0].boundingBox;
+}
+function openFeatureStore(){
+ try{
+  const raw=JSON.parse(localStorage.getItem(TRAIN_KEY)||'{}');
+  for(const k of ['paper','plastic']){
+   if(Array.isArray(raw[k])&&raw[k].length>=128&&raw[k].length<=1024&&raw[k].every(Number.isFinite))state.trained[k]=raw[k];
+  }
+ }catch(err){console.warn('[컵체크] 보정 데이터 미사용',err);}
+ trainingMessage();
+}
+function trainingMessage(message){
+ if(message){$('trainStatus').textContent=message;return;}
+ const classes=['paper','plastic'].filter(k=>state.trained[k]);
+ $('trainStatus').textContent=classes.length===2?'종이컵·플라스틱컵 보정이 완료됐습니다.':
+ classes.length===1?'한 종류 보정 완료. 두 컵을 모두 보정하면 인식에 도움이 됩니다.':
+ '보정하지 않아도 기본 모델을 사용할 수 있습니다.';
+}
+function normalized(v){
+ const length=Math.sqrt(v.reduce((s,x)=>s+x*x,0))||1;
+ return v.map(x=>x/length);
+}
+function cosine(a,b){
+ if(!Array.isArray(a)||!Array.isArray(b)||a.length!==b.length)return -1;
+ let s=0;for(let i=0;i<a.length;i++)s+=a[i]*b[i];
+ return s;
+}
+function classifyMaterial({scores,embedding}){
+ const sums={paper:0,plastic:0};
+ for(const r of scores||[]){
+  const p=OPTIONS.find(o=>o.label===r.label);
+  if((p?.group==='paper'||p?.group==='plastic')&&Number.isFinite(r.score))sums[p.group]+=r.score;
+ }
+ const share=sums.paper/Math.max(.00001,sums.paper+sums.plastic);
+ if(state.trained.paper&&state.trained.plastic){
+  const paper=cosine(embedding,state.trained.paper),plastic=cosine(embedding,state.trained.plastic);
+  if(Math.max(paper,plastic)>.55&&Math.abs(paper-plastic)>.012)return paper>plastic?'paper':'plastic';
+ }
+ if(share>.55)return 'paper';
+ if(share<.45)return 'plastic';
+ return null;
+}
+function addTrainingSample(embedding){
+ const t=state.training;
+ if(!t||!Array.isArray(embedding)||!embedding.length)return;
+ t.samples.push(embedding);
+ trainingMessage((t.type==='paper'?'종이컵':'플라스틱컵')+' 보정 중 · '+t.samples.length+'/5');
+ if(t.samples.length<5)return;
+ const len=t.samples[0].length;
+ const avg=Array.from({length:len},(_,i)=>t.samples.reduce((s,v)=>s+v[i],0)/t.samples.length);
+ state.trained[t.type]=normalized(avg);
+ state.training=null;
+ try{localStorage.setItem(TRAIN_KEY,JSON.stringify(state.trained));}catch(_){}
+ trainingMessage();
+}
+function beginTraining(type){
+ if(!state.running){trainingMessage('카메라를 시작한 뒤 보정해 주세요.');return;}
+ state.training={type,samples:[]};state.history=[];
+ trainingMessage((type==='paper'?'종이컵':'플라스틱컵')+'을 가운데 보여주세요.');
+}
+function resetTraining(){
+ state.training=null;state.trained={};
+ try{localStorage.removeItem(TRAIN_KEY);}catch(_){}
+ trainingMessage('보정을 초기화했습니다.');
+}
+function saveCrop(b){
+ const v=$('camera'),canvas=$('sampleCanvas'),width=v.videoWidth,height=v.videoHeight;
+ if(!width||!height)return false;
+ const cx=b.originX+b.width/2,cy=b.originY+b.height/2;
+ const side=Math.max(b.width,b.height)*1.32;
+ const w=Math.min(width,side),h=Math.min(height,side);
+ const x=Math.min(width-w,Math.max(0,cx-w/2)),y=Math.min(height-h,Math.max(0,cy-h/2));
+ canvas.getContext('2d',{willReadFrequently:true}).drawImage(v,x,y,w,h,0,0,canvas.width,canvas.height);
+ return true;
+}
 async function openCamera(side,token){
  if(!window.isSecureContext){const e=Error('HTTPS required');e.name='NoSecureContext';throw e;}
  if(!navigator.mediaDevices?.getUserMedia){const e=Error('getUserMedia unavailable');e.name='NoCameraAPI';throw e;}
- const constraints={
-  audio:false,
-  video:{facingMode:{ideal:side},width:{ideal:960},height:{ideal:720}}
- };
  let stream;
- try{stream=await navigator.mediaDevices.getUserMedia(constraints);}
- catch(err){
+ try{
+  stream=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:side},width:{ideal:960},height:{ideal:720}}});
+ }catch(err){
   if(err.name==='OverconstrainedError')stream=await navigator.mediaDevices.getUserMedia({audio:false,video:true});
   else throw err;
  }
@@ -207,6 +307,8 @@ async function begin(side=state.side){
  state.starting=true;
  stopCamera();
  state.history=[];
+ state.misses=0;
+ state.training=null;
  state.side=side;
  showPage('scan');
  clearResults('준비하고 있어요','카메라와 AI 모델을 연결하는 중입니다.');
@@ -220,14 +322,16 @@ async function begin(side=state.side){
   if(token!==state.token)return;
   status('카메라 연결됨',true);
   stage='model';
-  showLoading('AI 모델을 불러오고 있어요','첫 실행에는 모델 파일 다운로드가 필요합니다.');
+  showLoading('컵 탐지 AI를 불러오고 있어요','컵이 보이는지 먼저 확인합니다.');
+  await getDetector();
+  if(token!==state.token)return;
+  showLoading('재질 분석 AI를 불러오고 있어요','처음 실행 시 모델을 다운로드합니다.');
   await getModel();
   if(token!==state.token)return;
   $('cameraOverlay').hidden=true;
   state.running=true;
   status('분석 중',true);
-  clearResults('컵을 보여주세요','컵 하나를 화면 중앙에 비춰 주세요.');
-  $('analysisState').textContent='분석 중';
+  clearResults('아무것도 없음');
   const track=state.stream?.getVideoTracks()[0];
   track?.addEventListener('ended',()=>{
    if(token!==state.token||!state.running)return;
@@ -246,89 +350,62 @@ async function begin(side=state.side){
   }
  }
 }
-function snapshot(){
- const video=$('camera');
- if(video.readyState<2||!video.videoWidth||!video.videoHeight)return false;
- const canvas=$('sampleCanvas');
- const w=video.videoWidth,h=video.videoHeight;
- const length=Math.min(w,h)*.84;
- const x=(w-length)/2,y=(h-length)/2;
- const ctx=canvas.getContext('2d',{willReadFrequently:true});
- ctx.drawImage(video,x,y,length,length,0,0,canvas.width,canvas.height);
- return true;
-}
-function interpret(results){
- if(!Array.isArray(results))return{type:null,share:0.5,reason:'결과 없음'};
- const sums={paper:0,plastic:0,none:0};
- const maxes={paper:0,plastic:0,none:0};
- for(const item of results){
-  const opt=OPTIONS.find(x=>x.label===item.label);
-  if(!opt||!Number.isFinite(item.score))continue;
-  sums[opt.group]+=item.score;
-  maxes[opt.group]=Math.max(maxes[opt.group],item.score);
- }
- const total=sums.paper+sums.plastic;
- if(total<=.000001)return{type:null,share:.5,reason:'판별 불가'};
- const share=sums.paper/total;
- const best=Math.max(maxes.paper,maxes.plastic);
- const noCup=maxes.none>best*1.10;
- // This is a relative visual-language score, not a calibrated probability.
- const margin=Math.abs(share-.5);
- const clear=margin>.09 && best>.06 && !noCup;
- return{type:clear?(share>.5?'paper':'plastic'):null,share,reason:noCup?'컵이 보이지 않아요':margin<=.09?'재질을 확인하는 중':'다시 비춰주세요'};
-}
-function displayScores(share){
- const paper=Math.round(share*100),plastic=100-paper;
- $('paperBar').style.width=paper+'%';
- $('plasticBar').style.width=plastic+'%';
- $('paperValue').textContent=paper+'%';
- $('plasticValue').textContent=plastic+'%';
- $('analysisState').textContent='상대 비교';
-}
-function renderResult(result){
- displayScores(result.share);
- state.history.push(result.type);
- if(state.history.length>3)state.history.shift();
- const a=state.history.filter(x=>x==='paper').length;
- const b=state.history.filter(x=>x==='plastic').length;
- const stable=(a>=2&&a>b)?'paper':(b>=2&&b>a)?'plastic':null;
- if(stable){
-  $('resultAwait').hidden=true;
-  $('resultFound').hidden=false;
-  $('foundType').textContent=stable==='paper'?'PAPER CUP':'PLASTIC CUP';
-  $('foundTitle').innerHTML=stable==='paper'?'종이컵<span>!</span>':'플라스틱컵<span>!</span>';
-  $('foundSubtitle').textContent=stable==='paper'?'AI가 종이컵의 특징에 더 가깝다고 추정했습니다.':'AI가 플라스틱컵의 특징에 더 가깝다고 추정했습니다.';
-  $('resultFound').parentElement.parentElement.classList.toggle('is-plastic',stable==='plastic');
-  state.lastSuccess=performance.now();
-  status('분석 완료 · 계속 감지 중',true);
+function showAnswer(type){
+ const panel=$('resultFound').parentElement.parentElement;
+ if(type==='paper'||type==='plastic'){
+  $('resultAwait').hidden=true;$('resultFound').hidden=false;
+  $('foundTitle').textContent=type==='paper'?'종이컵':'플라스틱컵';
+  panel.classList.toggle('is-plastic',type==='plastic');
  }else{
-  $('resultFound').hidden=true;
-  $('resultAwait').hidden=false;
-  $('resultWaitingTitle').textContent=result.reason||'재질을 확인하는 중';
-  $('resultWaitingDetail').textContent='컵을 한 개만 가까이 비춰 주세요.';
-  status('분석 중',true);
+  $('resultAwait').hidden=false;$('resultFound').hidden=true;
+  $('resultWaitingTitle').textContent=type==='unknown'?'판별 중':'아무것도 없음';
+  $('resultWaitingDetail').textContent='';
+  panel.classList.remove('is-plastic');
  }
+}
+function updateStableMaterial(type){
+ state.history.push(type);
+ if(state.history.length>4)state.history.shift();
+ const count=state.history.filter(x=>x===type).length;
+ if(type&&count>=2)showAnswer(type);
+ else if(!type&&state.history.length>=3)showAnswer('unknown');
 }
 function scheduleNext(token,delay){
  if(state.analysisTimer)clearTimeout(state.analysisTimer);
  state.analysisTimer=setTimeout(()=>analyze(token),delay);
 }
 async function analyze(token){
- if(!state.running||state.token!==token)return;
- if(document.hidden){scheduleNext(token,650);return;}
- if(!snapshot()){scheduleNext(token,350);return;}
+ if(!state.running||token!==state.token)return;
+ if(document.hidden){scheduleNext(token,850);return;}
+ const video=$('camera');
+ if(video.readyState<2||!video.videoWidth){scheduleNext(token,380);return;}
  try{
-  const output=await state.model($('sampleCanvas'));
+  const detections=state.detector.detectForVideo(video,performance.now());
+  const box=cupBox(detections?.detections,video.videoWidth,video.videoHeight);
+  if(!box){
+   state.misses++;
+   state.history=[];
+   if(state.misses>=2){
+    showAnswer(null);status('컵 없음',true);
+    if(state.training)trainingMessage('컵이 보이지 않습니다. 컵을 가운데 보여주세요.');
+   }
+   scheduleNext(token,550);return;
+  }
+  state.misses=0;status('컵 분석 중',true);
+  if(!saveCrop(box)){scheduleNext(token,400);return;}
+  const result=await state.model($('sampleCanvas'));
   if(token!==state.token||!state.running)return;
-  renderResult(interpret(output));
+  if(state.training){
+   addTrainingSample(result.embedding);
+   scheduleNext(token,600);return;
+  }
+  updateStableMaterial(classifyMaterial(result));
+  scheduleNext(token,930);
  }catch(err){
   if(token!==state.token)return;
-  console.error('[컵체크] 이미지 분석 오류',err);
-  stopCamera();
-  showError(err,'model');
-  return;
+  console.error('[컵체크] 분석 오류',err);
+  stopCamera();showError(err,'model');
  }
- if(token===state.token&&state.running)scheduleNext(token,950);
 }
 $('startBtn').addEventListener('click',()=>begin('environment'));
 $('brandLink').addEventListener('click',e=>{e.preventDefault();backHome();});
@@ -337,6 +414,9 @@ $('retryBtn').addEventListener('click',()=>begin(state.side));
 $('flipBtn').addEventListener('click',()=>begin(state.side==='environment'?'user':'environment'));
 $('errorRetry').addEventListener('click',()=>begin(state.side));
 $('errorBack').addEventListener('click',backHome);
+document.querySelectorAll('[data-train]').forEach(b=>b.addEventListener('click',()=>beginTraining(b.dataset.train)));
+$('resetTraining').addEventListener('click',resetTraining);
+openFeatureStore();
 $('helpBtn').addEventListener('click',()=>{
  $('helpPanel').hidden=!$('helpPanel').hidden;
  $('helpBtn').setAttribute('aria-expanded',String(!$('helpPanel').hidden));
@@ -346,7 +426,7 @@ document.addEventListener('visibilitychange',()=>{
  if(document.hidden){state.history=[];}
 });
 window.__cupcheck={
- interpret,
+ classifyMaterial,cupBox,
  getState:()=>({page:state.page,running:state.running,side:state.side,modelReady:!!state.model})
 };
 })();
