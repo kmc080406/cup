@@ -13,14 +13,18 @@ const SOURCES=[
 // The model compares the image with natural-language descriptions.
 // The scores are NOT calibrated probabilities of a material.
 const OPTIONS=[
-  {group:'paper',label:'a photo of a white disposable paper drinking cup'},
-  {group:'paper',label:'a photo of a cardboard paper coffee cup'},
-  {group:'paper',label:'a photo of a brown or printed paper cup'},
-  {group:'plastic',label:'a photo of a transparent disposable plastic drinking cup'},
-  {group:'plastic',label:'a photo of a clear plastic iced coffee cup'},
-  {group:'plastic',label:'a photo of an opaque colored plastic party cup'},
-  {group:'none',label:'a photo of an empty table without a cup'},
-  {group:'none',label:'a photo of a human hand without any cup'}
+ {group:'paper',label:'a photo of a matte white disposable paper drinking cup'},
+ {group:'paper',label:'a photo of a brown kraft cardboard paper cup for hot coffee'},
+ {group:'paper',label:'a photo of a printed paper takeaway coffee cup'},
+ {group:'paper',label:'a photo of a paper cup with a rolled rim and a cardboard wall'},
+ {group:'paper',label:'a single paper drinking cup standing on a table'},
+ {group:'plastic',label:'a photo of a clear transparent plastic cup for iced drinks'},
+ {group:'plastic',label:'a photo of a disposable glossy plastic cup with reflections'},
+ {group:'plastic',label:'a photo of a translucent plastic drinking cup'},
+ {group:'plastic',label:'a photo of a solid colored plastic party cup'},
+ {group:'plastic',label:'a photo of an opaque white plastic disposable cup'},
+ {group:'none',label:'a photo of an empty table with no cup'},
+ {group:'none',label:'a photo of a hand without a drinking cup'}
 ];
 const LABELS=OPTIONS.map(x=>x.label);
 const state={
@@ -258,6 +262,14 @@ function weightedModelVote(result){
  }
  return sums.paper/Math.max(1e-7,sums.paper+sums.plastic);
 }
+function classifyByExamples(embedding,confidence=.80,gap=.032){
+ const a=state.trained.paper,b=state.trained.plastic;
+ if(!a.length||!b.length||!Array.isArray(embedding))return null;
+ const paper=Math.max(...a.map(ex=>similarity(ex,embedding)));
+ const plastic=Math.max(...b.map(ex=>similarity(ex,embedding)));
+ if(Math.max(paper,plastic)<confidence||Math.abs(paper-plastic)<gap)return null;
+ return paper>plastic?'paper':'plastic';
+}
 function classifyMaterial(result){
  const share=weightedModelVote(result);
  const a=state.trained.paper,b=state.trained.plastic;
@@ -419,7 +431,18 @@ async function capture(){
   const detections=state.detector.detect(frozen);
   const box=cupBox(detections?.detections,frozen.width,frozen.height);
   if(!box){
-   showAnswer(null);status('분석 완료',true);
+   // A calibrated cup might be missed by the generic COCO object detector.
+   // Use a much stricter image similarity check only when BOTH materials
+   // have real examples. Otherwise an empty frame remains 'nothing'.
+   if(state.trained.paper.length&&state.trained.plastic.length){
+    const fallback=await extractCupFeatures(frozen,centralCrop(frozen));
+    if(shot!==state.shotSeq||!state.photoCaptured)return;
+    state.lastEmbedding=fallback.embedding;
+    showAnswer(classifyByExamples(fallback.embedding)||null);
+   }else{
+    showAnswer(null);
+   }
+   status('분석 완료',true);
   }else{
    const result=await extractCupFeatures(frozen,box);
    if(shot!==state.shotSeq||!state.photoCaptured)return;
