@@ -11,7 +11,9 @@
 
 ## 작동 원리
 
-- 이미지와 문장을 비교하는 사전 학습 모델 **MobileCLIP-S0** (Hugging Face Transformers.js, \`Xenova/mobileclip_s0\`) 사용
+- 이미지와 문장을 비교하는 사전 학습 모델 **MobileCLIP-S0** (Hugging Face Transformers.js, `Xenova/mobileclip_s0`) 사용
+- **중요:** `pipeline()`은 이 모델에 없는 `onnx/model_quantized.onnx`를 요구하므로 사용하지 않습니다. `CLIPTextModelWithProjection` 및 `CLIPVisionModelWithProjection`을 별도로 불러옵니다.
+- 각각 존재하는 `onnx/text_model_quantized.onnx`(약 43MB)와 `onnx/vision_model_quantized.onnx`(약 12MB)를 사용하는 양자화 모델
 - 브라우저 내부에서 카메라 프레임(중앙부)을 분석하고, 종이컵·플라스틱컵의 설명문과 얼마나 유사한지 비교
 - 애매하거나 컵이 보이지 않는 경우 결과를 보류하도록 설계
 - 처음 실행 시 모델 파일 수십 MB를 다운로드해야 하므로 인터넷 연결이 필요합니다.
@@ -21,9 +23,9 @@
 
 ## 프로젝트 구성
 
-- \`index.html\`: 시작 화면과 카메라·분류 결과 UI
-- \`style.css\`: PC·모바일 반응형 디자인
-- \`app.js\`: 카메라 제어, MobileCLIP 불러오기, 분류 및 결과 표시
+- `index.html`: 시작 화면과 카메라·분류 결과 UI
+- `style.css`: PC·모바일 반응형 디자인
+- `app.js`: 카메라 제어, MobileCLIP 불러오기, 분류 및 결과 표시
 
 **개인정보:** 카메라 영상은 별도 서버에 업로드·저장하지 않습니다. 사전 학습 모델 파일을 다운로드해 브라우저에서 추론합니다.
 
