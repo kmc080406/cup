@@ -111,3 +111,39 @@ svg{display:block}h1,p{margin:0}[hidden]{display:none!important}
 @media(max-width:570px){.page-shell{width:calc(100% - 32px)}.topbar{height:70px}.brand{font-size:19px}.topbar-meta{font-size:8px;letter-spacing:.13em}.hero-content{padding:13px 0 22px;min-height:calc(100svh - 153px);justify-content:center}.hero-art{height:235px}.art-disc{width:230px}.illustration-card{width:124px;height:182px;padding:12px 10px;border-radius:14px}.illustration-tag{font-size:6px;gap:4px}.tag-circle{width:4px;height:4px}.cup-drawing{height:113px}.illustration-caption{font-size:11px}.art-label{font-size:7px;bottom:-2px;right:5%}.eyebrow{font-size:9px;margin-bottom:12px}.hero-copy h1{font-size:clamp(36px,9.2vw,50px);line-height:1.25;white-space:normal}.hero-subtitle{font-size:13px;margin-top:14px;line-height:1.65}.primary-button{height:58px;margin-top:23px;min-width:216px;font-size:16px;border-radius:13px;gap:35px;padding:0 21px 0 24px}.hero-note{max-width:290px;font-size:9px;margin-top:14px}.footer{font-size:9px;min-height:50px}.scan-heading{min-height:46px;margin-bottom:10px}.text-back{font-size:12px}.text-back span{display:none}.icon-button{height:39px;font-size:11px;padding:0 12px;border-radius:10px}.icon-button-square{width:39px;padding:0}.scan-grid{gap:11px}.camera-panel{height:min(44svh,430px);min-height:0;border-radius:20px}.camera-topline{inset:14px 12px auto}.live-status,.camera-side{font-size:9px;padding:8px 9px}.camera-hint{font-size:10px;bottom:18px}.viewfinder{inset:22% 24%}.result-panel{border-radius:20px;min-height:0;padding:17px 18px 19px}.result-overline{font-size:9px}.result-center{min-height:145px;padding:15px 0}.await-icon{width:56px;height:56px;border-radius:16px;margin-bottom:3px}.await-icon svg{width:37px;height:37px}.result-await strong{font-size:19px}.result-await p{font-size:10px}.found-title{font-size:clamp(50px,12vw,68px);margin:3px 0}.found-type{font-size:9px}.found-subtitle{font-size:10px}.result-bottom{padding-top:12px}.compare-label{font-size:9px;margin-bottom:10px}.score-header{font-size:10px;margin-bottom:5px}.score-row{margin-bottom:9px}.score-track{height:6px}.score-note{font-size:9px}.below-scan{margin-top:10px;font-size:9px}.below-scan button{font-size:10px}.help-panel{font-size:11px}.overlay-loading strong,.overlay-error strong{font-size:16px}.overlay-loading p,.overlay-error p{font-size:11px}}
 @media(max-height:720px) and (max-width:570px){.hero-art{height:165px}.art-disc{width:177px}.illustration-card{height:142px;width:96px;padding:8px}.cup-drawing{height:88px}.illustration-caption{font-size:9px}.hero-copy h1{font-size:35px}.hero-subtitle{margin-top:9px}.camera-panel{height:39svh}.result-center{min-height:105px}.found-title{font-size:51px}.score-note{display:none}}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}
+
+
+/* v3 — one clear answer; scores and graphs were removed from the markup */
+.result-panel{justify-content:center;min-height:510px;padding:32px}
+.result-overline{flex:0 0 auto}
+.result-center{flex:1;min-height:340px;padding:20px 0;display:flex;align-items:center;justify-content:center}
+.result-await{width:100%;gap:0}
+.result-await .await-icon,.result-await p{display:none}
+.result-await strong{font-size:clamp(32px,3.2vw,49px);line-height:1.25;color:#789183;letter-spacing:-.07em;white-space:nowrap}
+.result-found{width:100%}
+.result-found .found-type,.result-found .found-subtitle{display:none}
+.found-title{font-size:clamp(46px,4.5vw,67px);line-height:1.22;white-space:nowrap;margin:0;letter-spacing:-.07em}
+.result-panel.is-plastic .found-title{color:#2d7467}
+.calibration-area{margin-top:14px;border-top:1px solid #d1ddd2;padding-top:16px}
+.calibration-area b{display:block;font-size:13px}
+.calibration-area p{margin-top:5px;font-size:11px;line-height:1.75}
+.calibration-optional{color:#88a090;font-size:10px;font-weight:650}
+.calibration-actions{display:flex;gap:8px;flex-wrap:wrap;margin:13px 0 5px}
+.calibration-actions button{border-radius:10px;padding:10px 13px;background:white;border:1px solid #cfdfd2;color:#315643;font-size:11px;font-weight:850}
+.calibration-actions button:hover{background:#fff8e3}
+.calibration-actions button:disabled{opacity:.45}
+#resetTraining{background:transparent;border-color:transparent;color:#7e9482}
+#trainStatus{font-weight:750;color:#466b50}
+@media(max-width:930px){
+ .result-panel{min-height:245px}
+ .result-center{min-height:185px;padding:10px 0}
+ .found-title{font-size:clamp(45px,8vw,67px)}
+ .result-await strong{font-size:clamp(31px,6vw,43px)}
+}
+@media(max-width:570px){
+ .result-panel{min-height:205px;padding:19px}
+ .result-center{min-height:140px}
+ .found-title{font-size:clamp(41px,10.5vw,61px)}
+ .result-await strong{font-size:clamp(31px,7.9vw,40px)}
+ .calibration-actions button{padding:9px 11px;font-size:10px}
+}
